@@ -59,7 +59,7 @@ func NewMilvusSearchWorker(addr string, token string, collectionName string) *Mi
 	}
 }
 
-func (w *MilvusSearchWorker) SearchGrpc() time.Duration {
+func (w *MilvusSearchWorker) SearchGrpc() (time.Duration, error) {
 	sp, _ := entity.NewIndexAUTOINDEXSearchParam(1)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -68,17 +68,20 @@ func (w *MilvusSearchWorker) SearchGrpc() time.Duration {
 	defer w.pool.Put(c)
 	vector := w.vectors[rand.IntN(1000)]
 	start := time.Now()
-	c.Search(ctx, w.collectionName, nil, "", nil, []entity.Vector{entity.FloatVector(vector)}, "vector", entity.L2, 1000, sp)
+	_, err := c.Search(ctx, w.collectionName, nil, "", nil, []entity.Vector{entity.FloatVector(vector)}, "vector", entity.L2, 1000, sp)
+	if err != nil {
+		return time.Since(start), err
+	}
 	dur := time.Since(start)
-	return dur
+	return dur, nil
 }
 
-func (w *MilvusSearchWorker) SearchRestful() time.Duration {
+func (w *MilvusSearchWorker) SearchRestful() (time.Duration, error) {
 	url := fmt.Sprintf("%s/v1/vector/search", w.addr)
 
 	vs, _ := json.Marshal(w.vectors[rand.IntN(1000)])
 
-	var jsonStr = []byte(fmt.Sprintf(`{"collectionName":"%s","vector":%v}`, w.collectionName, string(vs)))
+	var jsonStr = []byte(fmt.Sprintf(`{"collectionName":"%s","vector":%v, "limit": 1000}`, w.collectionName, string(vs)))
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", w.token))
@@ -87,10 +90,11 @@ func (w *MilvusSearchWorker) SearchRestful() time.Duration {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		panic(err)
+		log.Println(err)
+		return time.Since(start), err
 	}
 	defer resp.Body.Close()
 
 	_, _ = io.ReadAll(resp.Body)
-	return time.Since(start)
+	return time.Since(start), nil
 }

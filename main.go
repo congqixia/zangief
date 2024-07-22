@@ -33,11 +33,15 @@ func main() {
 
 	doPress(func() {
 		var dur time.Duration
+		var err error
 		switch *reqType {
 		case "grpc":
-			dur = w.SearchGrpc()
+			dur, err = w.SearchGrpc()
 		case "restful":
-			dur = w.SearchRestful()
+			dur, err = w.SearchRestful()
+		}
+		if err != nil {
+			return
 		}
 		durTotal.Add(int64(dur))
 		count.Inc()
