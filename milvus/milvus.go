@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand/v2"
+	"math/rand"
 	"net/http"
 	"sync"
 	"time"
@@ -23,10 +23,30 @@ type MilvusSearchWorker struct {
 
 	vectors []entity.FloatVector
 
+	opt *option
+
 	pool *sync.Pool
 }
 
-func NewMilvusSearchWorker(addr string, token string, collectionName string) *MilvusSearchWorker {
+type option struct {
+	restfulPath string
+}
+
+func WithRestfulPath(path string) MilvusOption {
+	return func(opt *option) {
+		opt.restfulPath = path
+	}
+}
+
+type MilvusOption func(opt *option)
+
+func defaultOption() *option {
+	return &option{
+		restfulPath: "/v1/vector/search",
+	}
+}
+
+func NewMilvusSearchWorker(addr string, token string, collectionName string, opts ...MilvusOption) *MilvusSearchWorker {
 	vectors := make([]entity.FloatVector, 0, 1000)
 	for i := 0; i < 1000; i++ {
 		vector := make([]float32, 0, 768)
@@ -36,10 +56,18 @@ func NewMilvusSearchWorker(addr string, token string, collectionName string) *Mi
 		vectors = append(vectors, entity.FloatVector(vector))
 	}
 
+	opt := defaultOption()
+
+	for _, o := range opts {
+		o(opt)
+	}
+
 	return &MilvusSearchWorker{
 		addr:           addr,
 		token:          token,
 		collectionName: collectionName,
+
+		opt: opt,
 
 		vectors: vectors,
 		pool: &sync.Pool{
@@ -51,7 +79,7 @@ func NewMilvusSearchWorker(addr string, token string, collectionName string) *Mi
 				})
 
 				if err != nil {
-					log.Fatal("failed to connect to zilliz cloud instance")
+					log.Fatal("failed to connect to milvus instance")
 				}
 				return c
 			},
@@ -59,16 +87,16 @@ func NewMilvusSearchWorker(addr string, token string, collectionName string) *Mi
 	}
 }
 
-func (w *MilvusSearchWorker) SearchGrpc() (time.Duration, error) {
+func (w *MilvusSearchWorker) SearchGrpc(topK int) (time.Duration, error) {
 	sp, _ := entity.NewIndexAUTOINDEXSearchParam(1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := w.pool.Get().(client.Client)
 	defer w.pool.Put(c)
-	vector := w.vectors[rand.IntN(1000)]
+	vector := w.vectors[rand.Intn(1000)]
 	start := time.Now()
-	_, err := c.Search(ctx, w.collectionName, nil, "", nil, []entity.Vector{entity.FloatVector(vector)}, "vector", entity.L2, 1000, sp)
+	_, err := c.Search(ctx, w.collectionName, nil, "", nil, []entity.Vector{entity.FloatVector(vector)}, "vector", entity.L2, topK, sp)
 	if err != nil {
 		return time.Since(start), err
 	}
@@ -76,18 +104,24 @@ func (w *MilvusSearchWorker) SearchGrpc() (time.Duration, error) {
 	return dur, nil
 }
 
-func (w *MilvusSearchWorker) SearchRestful() (time.Duration, error) {
-	url := fmt.Sprintf("%s/v1/vector/search", w.addr)
+func (w *MilvusSearchWorker) SearchRestful(topK int) (time.Duration, error) {
+	url := fmt.Sprintf("%s%s", w.addr, w.opt.restfulPath)
 
-	vs, _ := json.Marshal(w.vectors[rand.IntN(1000)])
+	vs, _ := json.Marshal(w.vectors[rand.Intn(1000)])
 
-	var jsonStr = []byte(fmt.Sprintf(`{"collectionName":"%s","vector":%v, "limit": 1000}`, w.collectionName, string(vs)))
+	var jsonStr = []byte(fmt.Sprintf(`{"collectionName":"%s","vector":%v, "limit": %d}`, w.collectionName, string(vs), topK))
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", w.token))
 
 	start := time.Now()
-	client := &http.Client{}
+	trans := http.DefaultTransport.(*http.Transport)
+	trans.MaxIdleConnsPerHost = 100
+	trans.ForceAttemptHTTP2 = false
+
+	client := &http.Client{
+		Transport: trans,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Println(err)

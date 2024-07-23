@@ -1,11 +1,8 @@
 module github.com/congqixia/zangief
 
-go 1.22.0
+go 1.21.0
 
-require (
-	github.com/milvus-io/milvus-sdk-go/v2 v2.4.1
-	go.uber.org/atomic v1.11.0
-)
+require github.com/milvus-io/milvus-sdk-go/v2 v2.4.1
 
 require (
 	github.com/cockroachdb/errors v1.9.1 // indirect

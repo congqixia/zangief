@@ -4,6 +4,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/congqixia/zangief/stat"
 )
 
 type Presser struct {
@@ -13,24 +15,26 @@ type Presser struct {
 	cOnce sync.Once
 	close chan struct{}
 
-	tokenCh chan struct{}
-	work    func()
+	tokenCh chan *stat.Epoch
+	work    func(*stat.Epoch)
 
+	ppe       int // number of interval per epoch
 	intv      time.Duration
 	workerNum int
 	tokens    int
 }
 
-func NewPresser(intv time.Duration, workNum, tokens int, work func()) *Presser {
+func NewPresser(intv time.Duration, workNum, tokens int, periodPerEpoch int, work func(*stat.Epoch)) *Presser {
 	return &Presser{
 		intv:      intv,
 		workerNum: workNum,
 		tokens:    tokens,
 
 		close:   make(chan struct{}),
-		tokenCh: make(chan struct{}, tokens),
+		tokenCh: make(chan *stat.Epoch, tokens),
 
 		work: work,
+		ppe:  300,
 	}
 }
 
@@ -54,19 +58,34 @@ func (p *Presser) Start() {
 func (p *Presser) schedule() {
 	ticker := time.NewTicker(p.intv)
 	defer ticker.Stop()
+	var currentEpoch *stat.Epoch
+	var eidx int
 	for {
 		select {
-		case <-ticker.C:
+		case t := <-ticker.C:
+			if currentEpoch == nil {
+				currentEpoch = stat.NewEpoch(t, p.tokens*p.ppe)
+			}
 		ADD_TOKEN:
 			for i := 0; i < p.tokens; i++ {
 				select {
-				case p.tokenCh <- struct{}{}:
+				case p.tokenCh <- currentEpoch:
+					currentEpoch.Add()
 				default:
 					log.Println("overpress detected")
 					break ADD_TOKEN
 				}
 			}
+			eidx++
+			if eidx%p.ppe == 0 {
+				go currentEpoch.Stat()
+				currentEpoch = nil
+			}
 		case <-p.close:
+			// print last epoch statistics
+			if currentEpoch != nil {
+				currentEpoch.Stat()
+			}
 			return
 		}
 	}
@@ -77,8 +96,8 @@ func (p *Presser) worker() {
 		select {
 		case <-p.close:
 			return
-		case <-p.tokenCh:
-			p.work()
+		case e := <-p.tokenCh:
+			p.work(e)
 		}
 	}
 }
