@@ -17,24 +17,46 @@ import (
 )
 
 type MilvusSearchWorker struct {
-	addr           string
-	token          string
+	addr string
+	// token          string
 	collectionName string
 
 	vectors []entity.FloatVector
 
-	opt *option
+	opt        *option
+	collection *collectionInfo
 
 	pool *sync.Pool
 }
 
 type option struct {
 	restfulPath string
+	token       string
+	username    string
+	password    string
 }
 
 func WithRestfulPath(path string) MilvusOption {
 	return func(opt *option) {
 		opt.restfulPath = path
+	}
+}
+
+func WithToken(token string) MilvusOption {
+	return func(opt *option) {
+		opt.token = token
+	}
+}
+
+func WithPassword(username string) MilvusOption {
+	return func(opt *option) {
+		opt.username = username
+	}
+}
+
+func WithUsername(password string) MilvusOption {
+	return func(opt *option) {
+		opt.password = password
 	}
 }
 
@@ -46,7 +68,7 @@ func defaultOption() *option {
 	}
 }
 
-func NewMilvusSearchWorker(addr string, token string, collectionName string, opts ...MilvusOption) *MilvusSearchWorker {
+func NewMilvusSearchWorker(addr string, collectionName string, opts ...MilvusOption) *MilvusSearchWorker {
 	vectors := make([]entity.FloatVector, 0, 1000)
 	for i := 0; i < 1000; i++ {
 		vector := make([]float32, 0, 768)
@@ -64,7 +86,6 @@ func NewMilvusSearchWorker(addr string, token string, collectionName string, opt
 
 	return &MilvusSearchWorker{
 		addr:           addr,
-		token:          token,
 		collectionName: collectionName,
 
 		opt: opt,
@@ -74,8 +95,10 @@ func NewMilvusSearchWorker(addr string, token string, collectionName string, opt
 			New: func() any {
 				ctx := context.Background()
 				c, err := client.NewClient(ctx, client.Config{
-					Address: addr,
-					APIKey:  token,
+					Address:  addr,
+					APIKey:   opt.token,
+					Username: opt.username,
+					Password: opt.password,
 				})
 
 				if err != nil {
@@ -87,7 +110,54 @@ func NewMilvusSearchWorker(addr string, token string, collectionName string, opt
 	}
 }
 
-func (w *MilvusSearchWorker) SearchGrpc(topK int) (time.Duration, error) {
+// use milvus client to setup collection search information
+func (w *MilvusSearchWorker) SetupCollectionInfo(ctx context.Context) error {
+	c := w.pool.Get().(client.Client)
+	collection, err := c.DescribeCollection(ctx, w.collectionName)
+	if err != nil {
+		return err
+	}
+
+	info := &collectionInfo{
+		collection: collection,
+	}
+
+	// scan field to find pk field & vector field
+	var vfc, pkfc int
+	for _, field := range collection.Schema.Fields {
+		if field.DataType == entity.FieldTypeFloatVector || field.DataType == entity.FieldTypeBinaryVector {
+			info.vectorField = field
+			vfc++
+		}
+		if field.PrimaryKey {
+			info.pkField = field
+			pkfc++
+		}
+	}
+
+	if info.pkField != nil {
+		log.Printf("Primary Key Field found: %s, data type: %s\n", info.pkField.Name, info.pkField.DataType.String())
+	}
+	if info.vectorField != nil {
+		log.Printf("Vector Field found: %s, data type: %s\n", info.vectorField.Name, info.vectorField.DataType.String())
+
+		idxes, err := c.DescribeIndex(ctx, w.collectionName, info.vectorField.Name)
+		if err != nil {
+			return err
+		}
+		for _, idx := range idxes {
+			params := idx.Params()
+			info.metricsType = entity.MetricType(params["metric_type"])
+			log.Printf("Index metrics type found: %s\n", info.metricsType)
+		}
+	}
+
+	// store parsed info for search/query usage
+	w.collection = info
+	return nil
+}
+
+func (w *MilvusSearchWorker) SearchGrpc(topK int, filter string) (time.Duration, error) {
 	sp, _ := entity.NewIndexAUTOINDEXSearchParam(1)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,7 +166,8 @@ func (w *MilvusSearchWorker) SearchGrpc(topK int) (time.Duration, error) {
 	defer w.pool.Put(c)
 	vector := w.vectors[rand.Intn(1000)]
 	start := time.Now()
-	_, err := c.Search(ctx, w.collectionName, nil, "", nil, []entity.Vector{entity.FloatVector(vector)}, "vector", entity.L2, topK, sp)
+	_, err := c.Search(ctx,
+		w.collectionName, nil, filter, nil, []entity.Vector{entity.FloatVector(vector)}, w.collection.vectorField.Name, w.collection.metricsType, topK, sp, client.WithSearchQueryConsistencyLevel(entity.ClBounded))
 	if err != nil {
 		return time.Since(start), err
 	}
@@ -104,7 +175,17 @@ func (w *MilvusSearchWorker) SearchGrpc(topK int) (time.Duration, error) {
 	return dur, nil
 }
 
-func (w *MilvusSearchWorker) SearchRestful(topK int) (time.Duration, error) {
+func (opt *option) getBearer() string {
+	if opt.token != "" {
+		return opt.token
+	}
+	if opt.username != "" && opt.password != "" {
+		return fmt.Sprintf("%s:%s", opt.username, opt.password)
+	}
+	return ""
+}
+
+func (w *MilvusSearchWorker) SearchRestful(topK int, filter string) (time.Duration, error) {
 	url := fmt.Sprintf("%s%s", w.addr, w.opt.restfulPath)
 
 	vs, _ := json.Marshal(w.vectors[rand.Intn(1000)])
@@ -112,7 +193,9 @@ func (w *MilvusSearchWorker) SearchRestful(topK int) (time.Duration, error) {
 	var jsonStr = []byte(fmt.Sprintf(`{"collectionName":"%s","vector":%v, "limit": %d}`, w.collectionName, string(vs), topK))
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", w.token))
+	if bearer := w.opt.getBearer(); bearer != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", bearer))
+	}
 
 	start := time.Now()
 	trans := http.DefaultTransport.(*http.Transport)
@@ -131,4 +214,18 @@ func (w *MilvusSearchWorker) SearchRestful(topK int) (time.Duration, error) {
 
 	_, _ = io.ReadAll(resp.Body)
 	return time.Since(start), nil
+}
+
+func (w *MilvusSearchWorker) QueryGrpc(limit int64, filter string) (time.Duration, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := w.pool.Get().(client.Client)
+	defer w.pool.Put(c)
+	start := time.Now()
+	_, err := c.Query(ctx, w.collectionName, nil, filter, []string{w.collection.pkField.Name}, client.WithLimit(limit))
+	if err != nil {
+		return time.Since(start), err
+	}
+	dur := time.Since(start)
+	return dur, nil
 }

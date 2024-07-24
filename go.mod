@@ -2,7 +2,10 @@ module github.com/congqixia/zangief
 
 go 1.21.0
 
-require github.com/milvus-io/milvus-sdk-go/v2 v2.4.1
+require (
+	github.com/milvus-io/milvus-sdk-go/v2 v2.4.1
+	go.uber.org/atomic v1.11.0
+)
 
 require (
 	github.com/cockroachdb/errors v1.9.1 // indirect
@@ -25,5 +28,5 @@ require (
 	golang.org/x/text v0.13.0 // indirect
 	google.golang.org/genproto v0.0.0-20220503193339-ba3ae3f07e29 // indirect
 	google.golang.org/grpc v1.48.0 // indirect
-	google.golang.org/protobuf v1.30.0 // indirect
+	google.golang.org/protobuf v1.33.0 // indirect
 )

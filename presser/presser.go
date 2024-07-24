@@ -1,7 +1,6 @@
 package presser
 
 import (
-	"log"
 	"sync"
 	"time"
 
@@ -59,12 +58,14 @@ func (p *Presser) schedule() {
 	ticker := time.NewTicker(p.intv)
 	defer ticker.Stop()
 	var currentEpoch *stat.Epoch
+	var idx int
 	var eidx int
 	for {
 		select {
 		case t := <-ticker.C:
 			if currentEpoch == nil {
-				currentEpoch = stat.NewEpoch(t, p.tokens*p.ppe)
+				currentEpoch = stat.NewEpoch(idx, t, p.tokens*p.ppe)
+				idx++
 			}
 		ADD_TOKEN:
 			for i := 0; i < p.tokens; i++ {
@@ -72,7 +73,6 @@ func (p *Presser) schedule() {
 				case p.tokenCh <- currentEpoch:
 					currentEpoch.Add()
 				default:
-					log.Println("overpress detected")
 					break ADD_TOKEN
 				}
 			}
