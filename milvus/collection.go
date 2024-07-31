@@ -10,4 +10,6 @@ type collectionInfo struct {
 	vectorField *entity.Field
 
 	metricsType entity.MetricType
+
+	dim int
 }

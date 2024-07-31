@@ -1,4 +1,4 @@
-package presser
+package stresser
 
 import (
 	"sync"
@@ -7,7 +7,7 @@ import (
 	"github.com/congqixia/zangief/stat"
 )
 
-type Presser struct {
+type Stresser struct {
 	wg       sync.WaitGroup
 	workerWg sync.WaitGroup
 
@@ -23,8 +23,8 @@ type Presser struct {
 	tokens    int
 }
 
-func NewPresser(intv time.Duration, workNum, tokens int, periodPerEpoch int, work func(*stat.Epoch)) *Presser {
-	return &Presser{
+func NewStresser(intv time.Duration, workNum, tokens int, periodPerEpoch int, work func(*stat.Epoch)) *Stresser {
+	return &Stresser{
 		intv:      intv,
 		workerNum: workNum,
 		tokens:    tokens,
@@ -37,7 +37,7 @@ func NewPresser(intv time.Duration, workNum, tokens int, periodPerEpoch int, wor
 	}
 }
 
-func (p *Presser) Start() {
+func (p *Stresser) Start() {
 
 	p.workerWg.Add(p.workerNum)
 	for i := 0; i < p.workerNum; i++ {
@@ -54,7 +54,7 @@ func (p *Presser) Start() {
 	}()
 }
 
-func (p *Presser) schedule() {
+func (p *Stresser) schedule() {
 	ticker := time.NewTicker(p.intv)
 	defer ticker.Stop()
 	var currentEpoch *stat.Epoch
@@ -91,7 +91,7 @@ func (p *Presser) schedule() {
 	}
 }
 
-func (p *Presser) worker() {
+func (p *Stresser) worker() {
 	for {
 		select {
 		case <-p.close:
@@ -102,7 +102,7 @@ func (p *Presser) worker() {
 	}
 }
 
-func (p *Presser) Stop() {
+func (p *Stresser) Stop() {
 	p.cOnce.Do(func() {
 		close(p.close)
 		p.wg.Wait()
