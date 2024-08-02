@@ -33,7 +33,7 @@ func NewStresser(intv time.Duration, workNum, tokens int, periodPerEpoch int, wo
 		tokenCh: make(chan *stat.Epoch, tokens),
 
 		work: work,
-		ppe:  300,
+		ppe:  periodPerEpoch,
 	}
 }
 

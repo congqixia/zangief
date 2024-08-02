@@ -74,8 +74,8 @@ func (w *MilvusSearchWorker) SetupCollectionInfo(ctx context.Context) error {
 
 func (w *MilvusSearchWorker) getClient() client.Client {
 	if w.opt.pooling {
-		c := w.pool.Get().(client.Client)
-		return c
+		idx := w.idx.Inc()
+		return w.clients[int(idx)%len(w.clients)]
 	}
 
 	w.once.Do(func() {
@@ -96,9 +96,9 @@ func (w *MilvusSearchWorker) getClient() client.Client {
 }
 
 func (w *MilvusSearchWorker) putClient(c client.Client) {
-	if w.opt.pooling {
-		w.pool.Put(c)
-	}
+	// if w.opt.pooling {
+	// 	w.pool.Put(c)
+	// }
 }
 
 func (w *MilvusSearchWorker) SearchGrpc(topK int, filter string) (time.Duration, error) {
@@ -122,8 +122,8 @@ func (w *MilvusSearchWorker) SearchGrpc(topK int, filter string) (time.Duration,
 func (w *MilvusSearchWorker) QueryGrpc(limit int64, filter string) (time.Duration, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := w.pool.Get().(client.Client)
-	defer w.pool.Put(c)
+	c := w.getClient()
+	defer w.putClient(c)
 	start := time.Now()
 	_, err := c.Query(ctx, w.collectionName, nil, filter, []string{w.collection.pkField.Name}, client.WithLimit(limit))
 	if err != nil {

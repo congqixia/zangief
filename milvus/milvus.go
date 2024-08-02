@@ -15,11 +15,11 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
+	"go.uber.org/atomic"
 )
 
 type MilvusSearchWorker struct {
-	addr string
-	// token          string
+	addr           string
 	collectionName string
 
 	vectors []entity.FloatVector
@@ -27,9 +27,10 @@ type MilvusSearchWorker struct {
 	opt        *option
 	collection *collectionInfo
 
-	c    client.Client
-	once sync.Once
-	pool *sync.Pool
+	c       client.Client
+	once    sync.Once
+	clients []client.Client
+	idx     atomic.Int32
 }
 
 type option struct {
@@ -56,28 +57,28 @@ func NewMilvusSearchWorker(addr string, collectionName string, opts ...MilvusOpt
 		o(opt)
 	}
 
+	clients := make([]client.Client, 0, 100)
+	for i := 0; i < 100; i++ {
+		ctx := context.Background()
+		c, err := client.NewClient(ctx, client.Config{
+			Address:  addr,
+			APIKey:   opt.token,
+			Username: opt.username,
+			Password: opt.password,
+		})
+
+		if err != nil {
+			log.Fatal("failed to connect to milvus instance")
+		}
+		clients = append(clients, c)
+	}
+
 	return &MilvusSearchWorker{
 		addr:           addr,
 		collectionName: collectionName,
 
-		opt: opt,
-
-		pool: &sync.Pool{
-			New: func() any {
-				ctx := context.Background()
-				c, err := client.NewClient(ctx, client.Config{
-					Address:  addr,
-					APIKey:   opt.token,
-					Username: opt.username,
-					Password: opt.password,
-				})
-
-				if err != nil {
-					log.Fatal("failed to connect to milvus instance")
-				}
-				return c
-			},
-		},
+		opt:     opt,
+		clients: clients,
 	}
 }
 
